@@ -7,7 +7,7 @@ Voguie Bathy et Mathieu Ponnou
 | Point clé | Ce qui a été fait |
 |---|---|
 | **PostgreSQL cluster = performance + disponibilité** | Primary + Replica orchestrés par Patroni, testés sous charge avec pgbench |
-| **Master/Replica = architecture la plus utilisée** | Primary gère les écritures, replica streame le WAL et peut absorber les lectures |
+| **Master/Replica = architecture la plus utilisée** | Primary gère les écritures, replica streame le WAL — la séparation lectures/écritures (router les SELECT vers le replica) est un intérêt de l'architecture mais n'est pas mise en place ici |
 | **WAL = cœur du système** | `wal_level=replica`, `max_wal_senders=10`, réplication vérifiée via `pg_stat_replication` (state=streaming, lag=0) |
 | **HA = Patroni + failover** | Failover démontré : `docker stop primary` → replica devient leader automatiquement en <30s, timeline 1→2 |
 | **Monitoring = indispensable** | `pg_stat_replication` (lag, état), `pg_stat_activity` (connexions), API REST Patroni `/cluster` (rôles, état, timeline) |
