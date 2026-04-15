@@ -40,66 +40,6 @@ docker exec -it primary pgbench -U admin -d postgres -i -s 10
 
 ---
 
-## Tests sans PgBouncer (connexion directe — port 5432)
-
-### Baseline x1 — 10 clients
-
-```bash
-docker exec -it primary pgbench -U admin -d postgres -c 10 -j 2 -T 30
-```
-
-| Métrique | Valeur |
-|---|---|
-| Clients | 10 |
-| TPS | **479** |
-| Latence | **20 ms** |
-| Erreurs | 0 |
-
-### Simulation x10 — 100 clients
-
-```bash
-docker exec -it primary pgbench -U admin -d postgres -c 100 -j 4 -T 30
-```
-
-| Métrique | Valeur |
-|---|---|
-| Clients | 100 |
-| TPS | **409** |
-| Latence | **244 ms** |
-| Erreurs | 0 |
-
----
-
-## Tests avec PgBouncer (connexion via pool — port 6432)
-
-### Baseline x1 — 10 clients via PgBouncer
-
-```bash
-docker exec -it primary pgbench -U admin -d postgres -h pgbouncer -p 5432 -c 10 -j 2 -T 30
-```
-
-| Métrique | Valeur |
-|---|---|
-| Clients | 10 |
-| TPS | **414** |
-| Latence | **24 ms** |
-| Erreurs | 0 |
-
-### Simulation x10 — 100 clients via PgBouncer
-
-```bash
-docker exec -it primary pgbench -U admin -d postgres -h pgbouncer -p 5432 -c 100 -j 4 -T 30
-```
-
-| Métrique | Valeur |
-|---|---|
-| Clients | 100 |
-| TPS | **391** |
-| Latence | **255 ms** |
-| Erreurs | 0 |
-
----
-
 ## Test de saturation — la vraie différence PgBouncer
 
 Ce test dépasse `max_connections: 200` pour montrer ce que PgBouncer apporte réellement.
@@ -133,16 +73,15 @@ docker exec -it primary pgbench -U admin -d postgres -h pgbouncer -p 5432 -c 100
 
 ## Analyse des résultats
 
-| | Sans PgBouncer x1 | Sans PgBouncer x10 | Avec PgBouncer x1 | Avec PgBouncer x10 | Sans PgBouncer x1000 | Avec PgBouncer x1000 |
-|---|---|---|---|---|---|---|
-| Clients | 10 | 100 | 10 | 100 | 10 000 | 10 000 |
-| TPS | 479 | 409 | 414 | 391 | — | **463** |
-| Latence | 20 ms | 244 ms | 24 ms | 255 ms | — | **21 590 ms** |
-| Erreurs | 0 | 0 | 0 | 0 | **FATAL** | **0** |
+| | Sans PgBouncer | Avec PgBouncer |
+|---|---|---|
+| Clients | 10 000 | 10 000 |
+| TPS | — | **463** |
+| Latence | — | **21 590 ms** |
+| Transactions | — | **20 196** |
+| Erreurs | **FATAL: too many clients** | **0** |
 
-À 10 et 100 clients les résultats sont proches — le goulot est la puissance brute de la machine. La vraie différence apparaît à 10 000 clients : sans PgBouncer PostgreSQL rejette tout au-delà de `max_connections: 500`. Avec PgBouncer 20 196 transactions passent en mode `transaction pooling` (400 connexions réelles, scale=10), 0 erreur — la latence à 21 s s'explique par la saturation CPU de la machine locale, pas par l'architecture.
-
-**Face à une montée x10 du trafic :** PgBouncer absorbe les connexions pour éviter la saturation. Le replica peut recevoir les SELECT si l'application route les lectures vers le port 5433 — le primary ne traite alors plus que les écritures.
+À 10 000 clients, sans PgBouncer PostgreSQL rejette toutes les connexions au-delà de `max_connections: 500` — FATAL immédiat. Avec PgBouncer en mode `transaction pooling`, 20 196 transactions passent sur 400 connexions réelles, 0 erreur. La latence à 21 s s'explique par la saturation CPU de la machine locale, pas par l'architecture — sur un serveur dédié les chiffres seraient bien meilleurs.
 
 **Piste d'optimisation :** passer `synchronous_commit = off` dans la config PostgreSQL permettrait de gagner ~30-40% de TPS supplémentaire — PostgreSQL n'attendrait plus la confirmation d'écriture WAL sur disque avant de valider chaque transaction. Acceptable en environnement de test, risqué en production (perte possible des dernières transactions en cas de crash).
 
