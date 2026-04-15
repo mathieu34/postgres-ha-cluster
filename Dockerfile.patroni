@@ -1,0 +1,27 @@
+# Image de base : PostgreSQL version 15 (Debian)
+# On part de cette image car elle contient déjà PostgreSQL + gosu (changement d'utilisateur)
+FROM postgres:15
+
+# Passer en root pour installer les dépendances
+USER root
+
+# Installation de Patroni et ses dépendances
+# - python3, pip : nécessaires pour installer Patroni (écrit en Python)
+# - python3-setuptools : outils de packaging Python
+# - curl : utile pour les vérifications de santé
+# - patroni[etcd3] : Patroni avec le support etcd v3 (notre backend de consensus)
+# - psycopg2-binary : driver Python pour PostgreSQL (requis par Patroni)
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-setuptools \
+    curl \
+    && pip3 install --break-system-packages "patroni[etcd3]" psycopg2-binary \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copier le script d'entrée qui corrige les permissions avant de lancer Patroni
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Point d'entrée : le script corrige les permissions puis lance Patroni
+ENTRYPOINT ["/entrypoint.sh"]

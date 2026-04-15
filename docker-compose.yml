@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+
+  # ─────────────────────────────────────────────
+  # ETCD — Consensus distribué
+  # Rôle : stocke l'état du cluster et élit le leader
+  # Patroni l'interroge pour savoir quel nœud est le primary
+  # ─────────────────────────────────────────────
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.0
+    container_name: etcd
+    command:
+      - etcd
+      - --name=etcd0
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-cluster=etcd0=http://etcd:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=etcd-cluster-token
+    ports:
+      - "2379:2379"
+    healthcheck:
+      test: ["CMD-SHELL", "etcdctl --endpoints=http://localhost:2379 endpoint health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─────────────────────────────────────────────
+  # POSTGRES PRIMARY — Nœud principal
+  # Rôle : gère toutes les transactions, cible du test pgbench
+  # ─────────────────────────────────────────────
+  postgres-primary:
+    build:
+      context: .
+      dockerfile: Dockerfile.patroni
+    container_name: primary
+    volumes:
+      - primary_data:/var/lib/postgresql/data
+      - ./patroni/primary.yml:/etc/patroni/patroni.yml
+    ports:
+      - "5432:5432"   # Port PostgreSQL
+      - "8008:8008"   # Port API REST Patroni
+    depends_on:
+      etcd:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────
+  # POSTGRES REPLICA — Nœud secondaire
+  # Rôle : reçoit le WAL du primary via streaming replication
+  # Prêt à devenir primary automatiquement si le leader tombe (failover Patroni)
+  # Se clone depuis le primary au premier démarrage via pg_basebackup
+  # ─────────────────────────────────────────────
+  postgres-replica:
+    build:
+      context: .
+      dockerfile: Dockerfile.patroni   # Même image que le primary
+    container_name: replica
+    volumes:
+      - replica_data:/var/lib/postgresql/data          # Persistance des données PostgreSQL
+      - ./patroni/replica.yml:/etc/patroni/patroni.yml # Config Patroni pour ce nœud
+    ports:
+      - "5433:5432"   # Port PostgreSQL du replica (différent du primary)
+      - "8009:8008"   # Port API REST Patroni du replica
+    depends_on:
+      etcd:
+        condition: service_healthy
+      postgres-primary:
+        condition: service_started    # Attend que le primary soit lancé avant de cloner
+
+  # ─────────────────────────────────────────────
+  # PGBOUNCER — Pool de connexions
+  # Rôle : mutualise les connexions vers PostgreSQL
+  # Evite de saturer le primary avec trop de connexions directes
+  # Les clients se connectent sur 6432 au lieu de 5432
+  # ─────────────────────────────────────────────
+  pgbouncer:
+    image: edoburu/pgbouncer
+    container_name: pgbouncer
+    environment:
+      DB_HOST: primary          # Redirige les connexions vers le primary
+      DB_PORT: 5432
+      DB_USER: admin
+      DB_PASSWORD: admin
+      POOL_MODE: transaction      # Mode transaction : mutualise les connexions entre les clients
+      MAX_CLIENT_CONN: 10000     # Maximum 10 000 clients simultanés
+      DEFAULT_POOL_SIZE: 400     # Connexions réelles ouvertes vers PostgreSQL (< max_connections)
+      MIN_POOL_SIZE: 10          # Connexions maintenues ouvertes en permanence
+      RESERVE_POOL_SIZE: 50      # Connexions supplémentaires en cas de pic
+      AUTH_TYPE: md5             # Authentification par mot de passe MD5
+    ports:
+      - "6432:5432"   # Les clients se connectent sur 6432 au lieu de 5432
+    depends_on:
+      - postgres-primary
+
+volumes:
+  primary_data:
+  replica_data:   # Données du nœud replica

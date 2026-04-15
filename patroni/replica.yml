@@ -1,0 +1,96 @@
+# ─────────────────────────────────────────────────────────
+# Configuration Patroni — Nœud REPLICA
+# Identique au primary sauf : name, connect_address et restapi connect_address
+# Le replica reçoit le WAL du primary et est prêt à le remplacer (failover)
+# ─────────────────────────────────────────────────────────
+
+# Nom du cluster — doit être identique sur tous les nœuds
+scope: postgres-cluster
+# Namespace dans etcd où Patroni stocke les informations du cluster
+namespace: /db/
+# Nom unique de CE nœud — différent du primary
+name: replica
+
+# ─────────────────────────────────────────────────────────
+# API REST Patroni du replica
+# Accessible sur http://localhost:8009 depuis l'hôte
+# ─────────────────────────────────────────────────────────
+restapi:
+  listen: 0.0.0.0:8008          # Ecoute sur toutes les interfaces
+  connect_address: replica:8008 # Adresse que les autres nœuds utilisent pour joindre CE nœud
+
+# ─────────────────────────────────────────────────────────
+# Connexion à etcd
+# Même etcd que le primary — c'est ce qui permet la coordination et l'élection du leader
+# ─────────────────────────────────────────────────────────
+etcd3:
+  hosts: etcd:2379
+
+# ─────────────────────────────────────────────────────────
+# Bootstrap — Identique au primary
+# Si ce nœud démarre en premier (rare), il deviendra le leader initial
+# ─────────────────────────────────────────────────────────
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576  # Lag max autorisé (1MB) avant d'exclure ce nœud du failover
+    postgresql:
+      use_pg_rewind: true  # Permet de resynchroniser un ancien leader sans re-cloner
+      parameters:
+        max_connections: 200
+        wal_level: replica            # Active la réplication WAL (obligatoire pour streamer le WAL)
+        max_wal_senders: 10           # Nombre max de connexions de réplication simultanées
+        wal_keep_size: 64MB           # Conserve 64MB de WAL pour les replicas en retard
+        password_encryption: md5      # Force md5 pour compatibilité PgBouncer (sinon scram-sha-256 par défaut sur PG15)
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - host replication replicator 0.0.0.0/0 md5  # Autorise le streaming WAL
+    - host all all 0.0.0.0/0 md5
+
+  users:
+    admin:
+      password: admin
+      options:
+        - createrole
+        - createdb
+    replicator:
+      password: replicator
+      options:
+        - replication  # Droit de connexion pour la réplication streaming WAL
+
+# ─────────────────────────────────────────────────────────
+# Configuration PostgreSQL pour CE nœud (replica)
+# La seule différence avec le primary : connect_address pointe sur "replica"
+# Le primary utilise cette adresse pour envoyer le WAL à ce nœud
+# ─────────────────────────────────────────────────────────
+postgresql:
+  listen: 0.0.0.0:5432           # PostgreSQL écoute sur toutes les interfaces
+  connect_address: replica:5432  # Adresse utilisée par le primary pour envoyer le WAL à ce replica
+  data_dir: /var/lib/postgresql/data
+  bin_dir: /usr/lib/postgresql/15/bin
+  pgpass: /tmp/pgpass0
+  authentication:
+    replication:
+      username: replicator  # User utilisé pour streamer le WAL depuis le primary
+      password: replicator
+    superuser:
+      username: admin
+      password: admin
+    rewind:
+      username: admin       # User utilisé pour pg_rewind (resynchronisation d'un ancien leader)
+      password: admin
+
+# ─────────────────────────────────────────────────────────
+# Tags Patroni — Comportement de ce nœud dans le cluster
+# ─────────────────────────────────────────────────────────
+tags:
+  nofailover: false    # Ce nœud PEUT devenir leader en cas de failover
+  noloadbalance: false # Ce nœud PEUT recevoir des connexions de lecture
+  clonefrom: false     # Les autres nœuds ne cloneront pas depuis ce nœud en priorité
+  nosync: false        # Ce nœud PEUT être utilisé comme replica synchrone

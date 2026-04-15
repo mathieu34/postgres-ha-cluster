@@ -1,0 +1,67 @@
+#Où est etcd — pour stocker l'état du cluster (etcd3: hosts: etcd:2379)
+#Comment démarrer PostgreSQL — répertoire des données, binaires, port (data_dir, bin_dir, listen)
+#Quels paramètres PostgreSQL appliquer — max_connections.
+#Quel user créer — le user admin utilisé par pgbench
+
+# pour identifier le noeud dans  la base de donnéees clé-valeur distribuée etcd 
+# avec "leader" → "primary"
+scope: postgres-cluster
+namespace: /db/
+name: primary
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: primary:8008
+
+etcd3:
+  hosts: etcd:2379
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576  # Lag max autorisé (1MB) avant d'exclure un replica du failover
+    postgresql:
+      use_pg_rewind: true  # Permet de resynchroniser un ancien leader sans re-cloner
+      parameters:
+        max_connections: 500
+        wal_level: replica            # Active la réplication WAL — le "log" que le replica consomme
+        max_wal_senders: 10           # Nombre max de connexions de réplication simultanées
+        wal_keep_size: 64MB           # Conserve 64MB de WAL pour les replicas en retard
+        password_encryption: md5      # Force md5 pour compatibilité PgBouncer (sinon scram-sha-256 par défaut sur PG15)
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - host replication replicator 0.0.0.0/0 md5  # Autorise le replica à streamer le WAL
+    - host all all 0.0.0.0/0 md5
+
+  users:
+    admin:
+      password: admin
+      options:
+        - createrole
+        - createdb
+    replicator:
+      password: replicator
+      options:
+        - replication  # Droit de connexion pour la réplication streaming WAL
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: primary:5432
+  data_dir: /var/lib/postgresql/data
+  bin_dir: /usr/lib/postgresql/15/bin
+  authentication:
+    replication:
+      username: replicator  # User utilisé par le replica pour streamer le WAL
+      password: replicator
+    superuser:
+      username: admin
+      password: admin
+    rewind:
+      username: admin       # User utilisé pour pg_rewind (resynchronisation d'un ancien leader)
+      password: admin
