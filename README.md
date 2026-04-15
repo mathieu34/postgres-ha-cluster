@@ -1,3 +1,7 @@
+# Membres du projet 
+
+Voguie Bathy et Mathieu Ponnou
+
 # Test de charge pgbench — PostgreSQL + Patroni + PgBouncer
 
 | Point clé | Ce qui a été fait |
